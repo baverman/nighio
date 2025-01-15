@@ -1,39 +1,45 @@
-import functools
-from typing import Callable, TYPE_CHECKING, Any, Generator, Optional, Tuple, Generic, TypeVar, List
-from .compat import Concatenate, ParamSpec
+from typing import Callable, Generator, Generic, TypeVar, List
+from .compat import Concatenate, ParamSpec, Self
 
 P = ParamSpec('P')
 T = TypeVar('T')
 Receiver = Generator[None, bytes, None]
 Coro = Generator[None, None, T]
 DataCall = Callable[[bytes], None]
-SizeResult = Tuple[int, bytes]
 
-__all__ = ['Reader', 'protocol', 'Receiver', 'DataCall', 'Collector', 'SizeResult', 'Coro', 'IncompleteError']
+__all__ = ['Reader', 'Receiver', 'DataCall', 'Collector', 'Coro', 'IncompleteError']
 
 
 class IncompleteError(Exception):
     partial: bytes
 
 
-def safe_data_fn(fn: DataCall) -> DataCall:
-    @functools.wraps(fn)
-    def inner(data: bytes) -> None:
-        try:
-            fn(data)
-        except StopIteration:
-            pass
-    return inner
-
-
 class Reader:
-    def start(self, receiver: Coro[None]) -> DataCall:
+    _protocol: Coro[None]
+    _push: DataCall
+
+    def start(self, protocol: Coro[None]) -> None:
         self.buf = bytearray()
-        self._receiver = receiver
-        next(receiver)
+        self._protocol = protocol
+        next(protocol)
         gen = self._process()
         next(gen)
-        return safe_data_fn(gen.send)
+        self._push = gen.send
+
+    def push(self, data: bytes) -> None:
+        try:
+            self._push(data)
+        except StopIteration:
+            raise RuntimeError("Reader has received EOF already")
+
+    @classmethod
+    def protocol(cls, fn: Callable[Concatenate[Self, P], Coro[None]]) -> Callable[P, Self]:
+        def inner(*args: P.args, **kwargs: P.kwargs) -> Reader:
+            reader = cls()
+            receiver = fn(reader, *args, **kwargs)
+            reader.start(receiver)
+            return reader
+        return inner  # type: ignore[return-value]
 
     def read(self, size: int) -> Coro[bytes]:
         while len(self.buf) < size:
@@ -75,35 +81,27 @@ class Reader:
             data = yield
             if data:
                 self.buf.extend(data)
-                self._receiver.send(None)
+                self._protocol.send(None)
             else:
                 break
 
         if self.buf:
             error = IncompleteError()
             error.partial = bytes(self.buf)
-            self._receiver.throw(error)
+            self._protocol.throw(error)
         else:
-            self._receiver.close()
+            self._protocol.close()
 
-
-def protocol(cls: type[Reader]=Reader) -> Callable[[Callable[Concatenate[Reader, P], Coro[None]]], Callable[P, DataCall]]:
-    def decorator(fn: Callable[Concatenate[Reader, P], Coro[None]]) -> Callable[P, DataCall]:
-        def inner(*args: P.args, **kwargs: P.kwargs) -> DataCall:
-            reader = cls()
-            receiver = fn(reader, *args, **kwargs)
-            return reader.start(receiver)
-        return inner
-    return decorator
+        yield
 
 
 class Collector(Generic[T]):
-    def __init__(self, proto: Callable[[Callable[[T], None]], DataCall]):
+    def __init__(self, proto: Callable[[Callable[[T], None]], Reader]):
         self.events: List[T] = []
-        self.proto = proto(self.events.append)
+        self.reader = proto(self.events.append)
 
     def send(self, data: bytes) -> List[T]:
-        self.proto(data)
+        self.reader.push(data)
         if self.events:
             events = self.events[:]
             self.events.clear()

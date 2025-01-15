@@ -1,13 +1,11 @@
-from typing import List, Tuple, Callable, TypeVar, Generic, Any
+from typing import List, Tuple, Callable
 
 import pytest
-from keinio import protocol, Reader, DataCall, Receiver, Collector, IncompleteError, Coro
-
-T = TypeVar('T')
+from keinio import Reader, Collector, IncompleteError, Coro
 
 
 def test_read() -> None:
-    @protocol()
+    @Reader.protocol
     def proto(reader: Reader, handler: Callable[[Tuple[bytes, bytes]], None]) -> Coro[None]:
         while True:
             hdr = yield from reader.read(2)
@@ -22,22 +20,19 @@ def test_read() -> None:
 
 
 def test_readuntil_search_start() -> None:
-    rdr: Reader
-
-    @protocol()
+    @Reader.protocol
     def proto(reader: Reader, handler: Callable[[str], None]) -> Coro[None]:
-        nonlocal rdr
-        rdr = reader
         while True:
             data = yield from reader.readuntil(b'boo')
             handler(data.decode())
 
     p = Collector(proto)
     assert p.send(b'somebo') == []
-    # assert rdr._read_until_start == 6
-
     assert p.send(b'omooboo') == ['some', 'moo']
-    # assert rdr._read_until_start == 0
+    p.send(b'')
+
+    with pytest.raises(RuntimeError, match='EOF'):
+        p.send(b'foo')
 
 
 @pytest.mark.parametrize(
@@ -57,7 +52,7 @@ def test_readuntil_search_start() -> None:
     ]
 )
 def test_readuntil(stream: str, chunk_size: int, include: bool, eof: bool, expected: List[List[str]]) -> None:
-    @protocol()
+    @Reader.protocol
     def proto(reader: Reader, handler: Callable[[str], None]) -> Coro[None]:
         while True:
             data = yield from reader.readuntil(b':', include=include, eof=eof)
@@ -73,7 +68,7 @@ def test_readuntil(stream: str, chunk_size: int, include: bool, eof: bool, expec
 
 
 def test_incomplete_read() -> None:
-    @protocol()
+    @Reader.protocol
     def proto(reader: Reader, handler: Callable[[str], None]) -> Coro[None]:
         while True:
             data = yield from reader.readuntil(b':')
@@ -96,7 +91,7 @@ def test_composition() -> None:
         body = yield from reader.read(size)
         return body.decode()
 
-    @protocol()
+    @Reader.protocol
     def proto(reader: Reader, handler: Callable[[str], None]) -> Coro[None]:
         while True:
             size = yield from parse_hdr(reader)

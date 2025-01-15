@@ -2,3 +2,6 @@
 strict = true
 packages = ["keinio", "tests"]
 exclude = ["bench.py"]
+
+[tool.coverage.run]
+source = ["keinio"]
