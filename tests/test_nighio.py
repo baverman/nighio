@@ -1,12 +1,14 @@
-from typing import List, Tuple, Callable
+from typing import Callable, List, Tuple
 
 import pytest
-from keinio import Reader, Collector, IncompleteError, Coro
+
+from nighio import Collector, DataCoro, IncompleteError, Reader, Receiver, receiver
 
 
 def test_read() -> None:
-    @Reader.protocol
-    def proto(reader: Reader, handler: Callable[[Tuple[bytes, bytes]], None]) -> Coro[None]:
+    @receiver
+    def proto(handler: Callable[[Tuple[bytes, bytes]], None]) -> Receiver:
+        reader = Reader()
         while True:
             hdr = yield from reader.read(2)
             body = yield from reader.read(3)
@@ -19,11 +21,12 @@ def test_read() -> None:
     assert p.send(b'foo') == [(b'mb', b'foo')]
 
 
-def test_readuntil_search_start() -> None:
-    @Reader.protocol
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Coro[None]:
+def test_read_until_search_start() -> None:
+    @receiver
+    def proto(handler: Callable[[str], None]) -> Receiver:
+        reader = Reader()
         while True:
-            data = yield from reader.readuntil(b'boo')
+            data = yield from reader.read_until(b'boo')
             handler(data.decode())
 
     p = Collector(proto)
@@ -43,35 +46,45 @@ def test_readuntil_search_start() -> None:
         ('boo:f:', 3, False, False, [[], ['boo', 'f'], []]),
         ('boo', 3, False, True, [[], ['boo']]),
         ('boo', 3, True, True, [[], ['boo:']]),
-        ('1:2:3:4:5:6:', 1, False, False, [[], ['1'], [], ['2'], [], ['3'], [], ['4'], [], ['5'], [], ['6'], []]),
+        (
+            '1:2:3:4:5:6:',
+            1,
+            False,
+            False,
+            [[], ['1'], [], ['2'], [], ['3'], [], ['4'], [], ['5'], [], ['6'], []],
+        ),
         ('1:2:3:4:5:6:', 2, False, False, [['1'], ['2'], ['3'], ['4'], ['5'], ['6'], []]),
         ('1:2:3:4:5:6:', 3, False, False, [['1'], ['2', '3'], ['4'], ['5', '6'], []]),
         ('1:2:3:4:5:6:', 4, False, False, [['1', '2'], ['3', '4'], ['5', '6'], []]),
         ('1:2:3:4:5:6:', 5, False, False, [['1', '2'], ['3', '4', '5'], ['6'], []]),
         ('1:2:3:4:5:6:', 6, False, False, [['1', '2', '3'], ['4', '5', '6'], []]),
-    ]
+    ],
 )
-def test_readuntil(stream: str, chunk_size: int, include: bool, eof: bool, expected: List[List[str]]) -> None:
-    @Reader.protocol
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Coro[None]:
+def test_read_until(
+    stream: str, chunk_size: int, include: bool, eof: bool, expected: List[List[str]]
+) -> None:
+    @receiver
+    def proto(handler: Callable[[str], None]) -> Receiver:
+        reader = Reader()
         while True:
-            data = yield from reader.readuntil(b':', include=include, eof=eof)
+            data = yield from reader.read_until(b':', include=include, eof=eof)
             handler(data.decode())
 
     p = Collector(proto)
     data = stream.encode()
     result = []
     for start in range(0, len(data), chunk_size):
-        result.append(p.send(data[start:start+chunk_size]))
+        result.append(p.send(data[start : start + chunk_size]))
     result.append(p.send(b''))
     assert result == expected
 
 
 def test_incomplete_read() -> None:
-    @Reader.protocol
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Coro[None]:
+    @receiver
+    def proto(handler: Callable[[str], None]) -> Receiver:
+        reader = Reader()
         while True:
-            data = yield from reader.readuntil(b':')
+            data = yield from reader.read_until(b':')
             handler(data.decode())
 
     p = Collector(proto)
@@ -83,16 +96,17 @@ def test_incomplete_read() -> None:
 
 
 def test_composition() -> None:
-    def parse_hdr(reader: Reader) -> Coro[int]:
-        hdr = yield from reader.readuntil(b':')
+    def parse_hdr(reader: Reader) -> DataCoro[int]:
+        hdr = yield from reader.read_until(b':')
         return int(hdr)
 
-    def parse_body(reader: Reader, size: int) -> Coro[str]:
+    def parse_body(reader: Reader, size: int) -> DataCoro[str]:
         body = yield from reader.read(size)
         return body.decode()
 
-    @Reader.protocol
-    def proto(reader: Reader, handler: Callable[[str], None]) -> Coro[None]:
+    @receiver
+    def proto(handler: Callable[[str], None]) -> Receiver:
+        reader = Reader()
         while True:
             size = yield from parse_hdr(reader)
             data = yield from parse_body(reader, size)
@@ -100,3 +114,19 @@ def test_composition() -> None:
 
     p = Collector(proto)
     assert p.send(b'1:b2:fo') == ['b', 'fo']
+
+
+def test_read_until_eof() -> None:
+    @receiver
+    def proto(handler: Callable[[str], None]) -> Receiver:
+        reader = Reader()
+        while True:
+            line = yield from reader.read_until(b':', eof=True)
+            handler(line.decode())
+
+    p = Collector(proto)
+    assert p.send(b'boo:foo') == ['boo']
+    assert p.send(b'') == ['foo']
+
+    with pytest.raises(RuntimeError, match='EOF'):
+        p.send(b'')

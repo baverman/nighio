@@ -1,20 +1,21 @@
 import sys
+
 ver = sys.version_info[:2]
 
 from typing import TYPE_CHECKING
 
-__all__ = ['ParamSpec', 'Concatenate', 'Self']
+__all__ = ['ParamSpec', 'Self']
 
 if TYPE_CHECKING:  # pragma: no cover
-    from typing import ParamSpec, Concatenate, Self
+    from typing import ParamSpec, Self
 else:
     Self = None
 
-    class _Concatenate:
-        def __getitem__(self, *args):
-            return []
+    # class _Concatenate:
+    #     def __getitem__(self, *args):
+    #         return []
 
-    Concatenate = _Concatenate()
+    # Concatenate = _Concatenate()
 
     class ParamSpec(list):
         args = None
